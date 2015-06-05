@@ -32,8 +32,8 @@
 // Calculated Thresholds for zeros and ones
 #define BIT_LENGTH_THRES_LOW      (BIT_LENGTH - BIT_LENGTH_TOLERANCE)
 #define BIT_LENGTH_THRES_HIGH     (BIT_LENGTH + BIT_LENGTH_TOLERANCE)
-#define HALFBIT_LENGTH_THRES_LOW  (BIT_LENGTH_THRES_LOW  / 2)
-#define HALFBIT_LENGTH_THRES_HIGH (BIT_LENGTH_THRES_HIGH / 2)
+#define HALFBIT_LENGTH_THRES_LOW  ((BIT_LENGTH / 2) - BIT_LENGTH_TOLERANCE)
+#define HALFBIT_LENGTH_THRES_HIGH ((BIT_LENGTH / 2) + BIT_LENGTH_TOLERANCE)
 
 #define FIFO_SIZE                  16
 
@@ -108,7 +108,7 @@ static irqreturn_t irq_handler(int i, void *blah, struct pt_regs *regs)
   struct timeval tv;
 
   do_gettimeofday(&tv);
-  timeStamp = (tv.tv_sec * 1000) + tv.tv_usec;
+  timeStamp = (tv.tv_sec * 1000000) + tv.tv_usec;
 
   // Calculate bit length
   bitLength = timeStamp - lastTimeStamp;
