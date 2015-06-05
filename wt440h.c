@@ -35,7 +35,7 @@
 #define HALFBIT_LENGTH_THRES_LOW  (BIT_LENGTH_THRES_LOW  / 2)
 #define HALFBIT_LENGTH_THRES_HIGH (BIT_LENGTH_THRES_HIGH / 2)
 
-#define FIFO_SIZE                  256
+#define FIFO_SIZE                  16
 
 // Port
 static struct gpio_chip *gpiochip;
