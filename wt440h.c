@@ -35,10 +35,8 @@
 #define HALFBIT_LENGTH_THRES_LOW  ((BIT_LENGTH / 2) - BIT_LENGTH_TOLERANCE)
 #define HALFBIT_LENGTH_THRES_HIGH ((BIT_LENGTH / 2) + BIT_LENGTH_TOLERANCE)
 
-#define HIGH_BIT_INT              (1 << ((sizeof(unsigned int) * 8) - 1))
-
 #define FIFO_SIZE                  16
-static DEFINE_KFIFO(bit_fifo, unsigned int, FIFO_SIZE);
+static DEFINE_KFIFO(bit_fifo, unsigned char, FIFO_SIZE);
 
 DECLARE_WAIT_QUEUE_HEAD(file_read);
 
@@ -62,16 +60,17 @@ static int __init is_right_chip(struct gpio_chip *chip, void *data)
 
 static inline void queue_bit(unsigned char bit, unsigned int timeStamp)
 {
-  unsigned int retval;
+  static unsigned int lastbit = 0;
+  unsigned int retval, bitLength;
 
-  if(bit) {
-    timeStamp |= HIGH_BIT_INT;
-  }
-  else {
-    timeStamp &= ~HIGH_BIT_INT;
+  bitLength = timeStamp - lastbit;
+  lastbit = timeStamp;
+
+  if((bitLength < BIT_LENGTH_THRES_LOW) || (bitLength > BIT_LENGTH_THRES_HIGH)) {
+    bit |= 2;
   }
 
-  retval = kfifo_put(&bit_fifo, timeStamp);
+  retval = kfifo_put(&bit_fifo, bit);
 
   switch(retval) {
     case 1: {
@@ -223,14 +222,14 @@ static int device_close(struct inode* inode, struct file* filp)
 static ssize_t device_read(struct file* filp, char __user *buffer, size_t length, loff_t* offset)
 {
   ssize_t retval = 0;
-  unsigned int elements, bit;
-  unsigned char fmtbuf[50];
+  unsigned int elements;
+  unsigned char fmtbuf[50], bit;
 
   wait_event_interruptible(file_read, !kfifo_is_empty(&bit_fifo));
   elements = kfifo_get(&bit_fifo, &bit);
   switch(elements) {
     case 1: {
-      retval = snprintf(fmtbuf, sizeof(fmtbuf), "%u %u\n", (bit & HIGH_BIT_INT) ? 1 : 0, bit & ~HIGH_BIT_INT);
+      retval = snprintf(fmtbuf, sizeof(fmtbuf), "%u %u\n", (bit & 2) ? 1 : 0, (bit & 1) ? 1 : 0);
       if(copy_to_user(buffer, fmtbuf, retval)) {
         retval = -EFAULT;
       }
