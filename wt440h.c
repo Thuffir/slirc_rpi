@@ -230,33 +230,13 @@ static int device_close(struct inode* inode, struct file* filp)
 
 static ssize_t device_read(struct file* filp, char __user *buffer, size_t length, loff_t* offset)
 {
-  ssize_t retval = 0;
-  unsigned int elements;
-  unsigned char fmtbuf[50], bit;
+  int retval;
+  unsigned int copied;
 
   wait_event_interruptible(file_read, !kfifo_is_empty(&bit_fifo));
-  elements = kfifo_get(&bit_fifo, &bit);
-  switch(elements) {
-    case 1: {
-      retval = snprintf(fmtbuf, sizeof(fmtbuf), "%u %u\n", (bit & BIT_TIMEOUT_MSK) ? 1 : 0, (bit & BIT_MSK) ? 1 : 0);
-      if(copy_to_user(buffer, fmtbuf, retval)) {
-        retval = -EFAULT;
-      }
-    }
-    break;
+  retval = kfifo_to_user(&bit_fifo, buffer, length, &copied);
 
-    case 0: {
-    }
-    break;
-
-    default: {
-      printk(KERN_ERR DRIVER_NAME": kfifo_get() returned %u\n", elements);
-      retval = -EFAULT;
-    }
-    break;
-  }
-
-  return retval;
+  return retval ? retval : copied;
 }
 
 /* The file_operation scructure tells the kernel which device operations are handled.
@@ -351,7 +331,7 @@ static void __exit exit_main(void)
   uninit_device();
   uninit_port();
 
-  printk(KERN_INFO DRIVER_NAME" driver deinstalled\n");
+  printk(KERN_INFO DRIVER_NAME" driver uninstalled\n");
 }
 
 module_init(init_main);
