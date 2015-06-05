@@ -35,7 +35,12 @@
 #define HALFBIT_LENGTH_THRES_LOW  ((BIT_LENGTH / 2) - BIT_LENGTH_TOLERANCE)
 #define HALFBIT_LENGTH_THRES_HIGH ((BIT_LENGTH / 2) + BIT_LENGTH_TOLERANCE)
 
+#define HIGH_BIT_INT              (1 << ((sizeof(unsigned int) * 8) - 1))
+
 #define FIFO_SIZE                  16
+static DEFINE_KFIFO(bit_fifo, unsigned int, FIFO_SIZE);
+
+DECLARE_WAIT_QUEUE_HEAD(file_read);
 
 // Port
 static struct gpio_chip *gpiochip;
@@ -46,17 +51,6 @@ static struct class* device_class = NULL;
 static struct device* device_device = NULL;
 static int device_major = 0;
 
-DECLARE_WAIT_QUEUE_HEAD(file_read);
-
-// Bit Value with Timestamp
-typedef struct {
-  unsigned char bit;
-  unsigned int timeStamp;
-} BitType;
-
-
-static DEFINE_KFIFO(bit_fifo, BitType, FIFO_SIZE);
-
 static int __init is_right_chip(struct gpio_chip *chip, void *data)
 {
     if (strcmp(data, chip->label) == 0) {
@@ -66,14 +60,18 @@ static int __init is_right_chip(struct gpio_chip *chip, void *data)
     return 0;
 }
 
-static inline void queue_bit(unsigned char bitVal, unsigned int timeStamp)
+static inline void queue_bit(unsigned char bit, unsigned int timeStamp)
 {
-  BitType bit;
   unsigned int retval;
 
-  bit.bit = bitVal;
-  bit.timeStamp = timeStamp;
-  retval = kfifo_put(&bit_fifo, bit);
+  if(bit) {
+    timeStamp |= HIGH_BIT_INT;
+  }
+  else {
+    timeStamp &= ~HIGH_BIT_INT;
+  }
+
+  retval = kfifo_put(&bit_fifo, timeStamp);
 
   switch(retval) {
     case 1: {
@@ -225,15 +223,14 @@ static int device_close(struct inode* inode, struct file* filp)
 static ssize_t device_read(struct file* filp, char __user *buffer, size_t length, loff_t* offset)
 {
   ssize_t retval = 0;
-  unsigned int elements;
-  BitType bit;
+  unsigned int elements, bit;
   unsigned char fmtbuf[50];
 
   wait_event_interruptible(file_read, !kfifo_is_empty(&bit_fifo));
   elements = kfifo_get(&bit_fifo, &bit);
   switch(elements) {
     case 1: {
-      retval = snprintf(fmtbuf, sizeof(fmtbuf), "%u %u\n", bit.bit, bit.timeStamp);
+      retval = snprintf(fmtbuf, sizeof(fmtbuf), "%u %u\n", (bit & HIGH_BIT_INT) ? 1 : 0, bit & ~HIGH_BIT_INT);
       if(copy_to_user(buffer, fmtbuf, retval)) {
         retval = -EFAULT;
       }
