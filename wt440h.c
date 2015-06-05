@@ -149,6 +149,7 @@ static irqreturn_t irq_handler(int i, void *blah, struct pt_regs *regs)
 
     // Invalid state (should not happen)
     default: {
+      printk(KERN_ERR DRIVER_NAME": irq handler has invalid state: %u\n", state);
       state = BitStartReceived;
     }
     break;
@@ -223,7 +224,8 @@ static int device_close(struct inode* inode, struct file* filp)
 
 static ssize_t device_read(struct file* filp, char __user *buffer, size_t length, loff_t* offset)
 {
-  unsigned int elements, copied = 0;
+  ssize_t retval = 0;
+  unsigned int elements;
   BitType bit;
   unsigned char fmtbuf[50];
 
@@ -231,8 +233,10 @@ static ssize_t device_read(struct file* filp, char __user *buffer, size_t length
   elements = kfifo_get(&bit_fifo, &bit);
   switch(elements) {
     case 1: {
-      copied = snprintf(fmtbuf, sizeof(fmtbuf), "%u %u\n", bit.bit, bit.timeStamp);
-      copy_to_user(buffer, fmtbuf, copied);
+      retval = snprintf(fmtbuf, sizeof(fmtbuf), "%u %u\n", bit.bit, bit.timeStamp);
+      if(copy_to_user(buffer, fmtbuf, retval)) {
+        retval = -EFAULT;
+      }
     }
     break;
 
@@ -242,11 +246,12 @@ static ssize_t device_read(struct file* filp, char __user *buffer, size_t length
 
     default: {
       printk(KERN_ERR DRIVER_NAME": kfifo_get() returned %u\n", elements);
+      retval = -EFAULT;
     }
     break;
   }
 
-  return copied;
+  return retval;
 }
 
 /* The file_operation scructure tells the kernel which device operations are handled.
