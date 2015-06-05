@@ -19,6 +19,7 @@
 #include <linux/sched.h>
 #include <linux/time.h>
 #include <linux/kfifo.h>
+#include <asm/uaccess.h>
 
 // GPIO PIN
 #define INPUT_PIN                   25
@@ -53,6 +54,7 @@ typedef struct {
   unsigned int timeStamp;
 } BitType;
 
+
 static DEFINE_KFIFO(bit_fifo, BitType, FIFO_SIZE);
 
 static int __init is_right_chip(struct gpio_chip *chip, void *data)
@@ -62,6 +64,33 @@ static int __init is_right_chip(struct gpio_chip *chip, void *data)
     }
 
     return 0;
+}
+
+static inline void queue_bit(unsigned char bitVal, unsigned int timeStamp)
+{
+  BitType bit;
+  unsigned int retval;
+
+  bit.bit = bitVal;
+  bit.timeStamp = timeStamp;
+  retval = kfifo_put(&bit_fifo, bit);
+
+  switch(retval) {
+    case 1: {
+      wake_up_interruptible(&file_read);
+    }
+    break;
+
+    case 0: {
+      printk(KERN_WARNING DRIVER_NAME": fifo full, bit missed\n");
+    }
+    break;
+
+    default: {
+      printk(KERN_ERR DRIVER_NAME": kfifo_put() returned %u\n", retval);
+    }
+    break;
+  }
 }
 
 static irqreturn_t irq_handler(int i, void *blah, struct pt_regs *regs)
@@ -77,7 +106,6 @@ static irqreturn_t irq_handler(int i, void *blah, struct pt_regs *regs)
   // Bit Length
   unsigned int bitLength, timeStamp;
   struct timeval tv;
-  BitType bit;
 
   do_gettimeofday(&tv);
   timeStamp = (tv.tv_sec * 1000) + tv.tv_usec;
@@ -99,10 +127,7 @@ static irqreturn_t irq_handler(int i, void *blah, struct pt_regs *regs)
       // Check bit length
       if((bitLength >= BIT_LENGTH_THRES_LOW) && (bitLength <= BIT_LENGTH_THRES_HIGH)) {
         // Full bit length, Zero received
-        bit.bit = 0;
-        bit.timeStamp = timeStamp;
-        kfifo_in(bit_fifo, &bit, 1);
-        wake_up_interruptible(&file_read);
+        queue_bit(0, timeStamp);
       }
       else if((bitLength >= HALFBIT_LENGTH_THRES_LOW) && (bitLength <= HALFBIT_LENGTH_THRES_HIGH)) {
         // Half bit length, first half of a One received
@@ -116,10 +141,7 @@ static irqreturn_t irq_handler(int i, void *blah, struct pt_regs *regs)
       // Check bit length
       if((bitLength >= HALFBIT_LENGTH_THRES_LOW) && (bitLength <= HALFBIT_LENGTH_THRES_HIGH)) {
         // Second half of a One received
-        bit.bit = 1;
-        bit.timeStamp = timeStamp;
-        kfifo_in(bit_fifo, &bit, 1);
-        wake_up_interruptible(&file_read);
+        queue_bit(1, timeStamp);
       }
       state = BitStartReceived;
     }
@@ -156,7 +178,7 @@ static int __init init_port(void)
   irq_num = gpiochip->to_irq(gpiochip, INPUT_PIN);
 
   retval = 0;
-  
+
   exit:
   return retval;
 }
@@ -201,9 +223,30 @@ static int device_close(struct inode* inode, struct file* filp)
 
 static ssize_t device_read(struct file* filp, char __user *buffer, size_t length, loff_t* offset)
 {
-  wait_event_interruptible(file_read, 0);
-  
-  return 0;
+  unsigned int elements, copied = 0;
+  BitType bit;
+  unsigned char fmtbuf[50];
+
+  wait_event_interruptible(file_read, !kfifo_is_empty(&bit_fifo));
+  elements = kfifo_get(&bit_fifo, &bit);
+  switch(elements) {
+    case 1: {
+      copied = snprintf(fmtbuf, sizeof(fmtbuf), "%u %u\n", bit.bit, bit.timeStamp);
+      copy_to_user(buffer, fmtbuf, copied);
+    }
+    break;
+
+    case 0: {
+    }
+    break;
+
+    default: {
+      printk(KERN_ERR DRIVER_NAME": kfifo_get() returned %u\n", elements);
+    }
+    break;
+  }
+
+  return copied;
 }
 
 /* The file_operation scructure tells the kernel which device operations are handled.
@@ -213,6 +256,7 @@ static struct file_operations fops = {
  .open = device_open,
  .release = device_close
 };
+
 static int __init init_device(void)
 {
   unsigned int retval;
