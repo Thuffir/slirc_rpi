@@ -1,6 +1,6 @@
 /***********************************************************************************************************************
  *
- * WT440H Receiver / Decoder for Raspberry Pi
+ * WT440H Receiver for Raspberry Pi
  *
  * (C) 2015 Gergely Budai
  *
@@ -9,9 +9,9 @@
 #define DESCRIPTION "WT440H - Wireless Temperature and Humidity sensor receiver driver"
 #define AUTHOR      "Gergely Budai"
 
-#include <linux/module.h> /* Needed by all modules */
-#include <linux/kernel.h> /* Needed for KERN_INFO */
-#include <linux/init.h>   /* Needed for the macros */
+#include <linux/module.h>
+#include <linux/kernel.h>
+#include <linux/init.h>
 #include <linux/gpio.h>
 #include <linux/interrupt.h>
 #include <linux/device.h>
@@ -35,13 +35,21 @@
 #define HALFBIT_LENGTH_THRES_LOW  ((BIT_LENGTH / 2) - BIT_LENGTH_TOLERANCE)
 #define HALFBIT_LENGTH_THRES_HIGH ((BIT_LENGTH / 2) + BIT_LENGTH_TOLERANCE)
 
-#define FIFO_SIZE                  16
+// Bit definitions
+#define BIT_ZERO                  0
+#define BIT_ONE                   1
+#define BIT_TIMEOUT               2
+#define BIT_MSK                   1
+#define BIT_TIMEOUT_MSK           2
+
+// Bits FIFO
+#define FIFO_SIZE                  32
 static DEFINE_KFIFO(bit_fifo, unsigned char, FIFO_SIZE);
 
+// For blocking read
 DECLARE_WAIT_QUEUE_HEAD(file_read);
 
-// Port
-static struct gpio_chip *gpiochip;
+// IRQ
 static int irq_num = 0;
 
 // Device variables
@@ -58,16 +66,16 @@ static int __init is_right_chip(struct gpio_chip *chip, void *data)
     return 0;
 }
 
-static inline void queue_bit(unsigned char bit, unsigned int timeStamp)
+static inline void queue_bit(unsigned char bit, unsigned int time_stamp)
 {
-  static unsigned int lastbit = 0;
-  unsigned int retval, bitLength;
+  static unsigned int last_timestamp = 0;
+  unsigned int retval, bit_length;
 
-  bitLength = timeStamp - lastbit;
-  lastbit = timeStamp;
+  bit_length = time_stamp - last_timestamp;
+  last_timestamp = time_stamp;
 
-  if((bitLength < BIT_LENGTH_THRES_LOW) || (bitLength > BIT_LENGTH_THRES_HIGH)) {
-    bit |= 2;
+  if((bit_length < BIT_LENGTH_THRES_LOW) || (bit_length > BIT_LENGTH_THRES_HIGH)) {
+    bit |= BIT_TIMEOUT;
   }
 
   retval = kfifo_put(&bit_fifo, bit);
@@ -124,7 +132,7 @@ static irqreturn_t irq_handler(int i, void *blah, struct pt_regs *regs)
       // Check bit length
       if((bitLength >= BIT_LENGTH_THRES_LOW) && (bitLength <= BIT_LENGTH_THRES_HIGH)) {
         // Full bit length, Zero received
-        queue_bit(0, timeStamp);
+        queue_bit(BIT_ZERO, timeStamp);
       }
       else if((bitLength >= HALFBIT_LENGTH_THRES_LOW) && (bitLength <= HALFBIT_LENGTH_THRES_HIGH)) {
         // Half bit length, first half of a One received
@@ -138,7 +146,7 @@ static irqreturn_t irq_handler(int i, void *blah, struct pt_regs *regs)
       // Check bit length
       if((bitLength >= HALFBIT_LENGTH_THRES_LOW) && (bitLength <= HALFBIT_LENGTH_THRES_HIGH)) {
         // Second half of a One received
-        queue_bit(1, timeStamp);
+        queue_bit(BIT_ONE, timeStamp);
       }
       state = BitStartReceived;
     }
@@ -157,6 +165,7 @@ static irqreturn_t irq_handler(int i, void *blah, struct pt_regs *regs)
 
 static int __init init_port(void)
 {
+  struct gpio_chip *gpiochip;
   int retval;
 
   gpiochip = gpiochip_find("pinctrl-bcm2835", is_right_chip);
@@ -229,7 +238,7 @@ static ssize_t device_read(struct file* filp, char __user *buffer, size_t length
   elements = kfifo_get(&bit_fifo, &bit);
   switch(elements) {
     case 1: {
-      retval = snprintf(fmtbuf, sizeof(fmtbuf), "%u %u\n", (bit & 2) ? 1 : 0, (bit & 1) ? 1 : 0);
+      retval = snprintf(fmtbuf, sizeof(fmtbuf), "%u %u\n", (bit & BIT_TIMEOUT_MSK) ? 1 : 0, (bit & BIT_MSK) ? 1 : 0);
       if(copy_to_user(buffer, fmtbuf, retval)) {
         retval = -EFAULT;
       }
