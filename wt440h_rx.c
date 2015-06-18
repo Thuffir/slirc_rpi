@@ -24,6 +24,7 @@
 #define AUTHOR      "Gergely Budai"
 
 #include <linux/module.h>
+#include <linux/moduleparam.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/gpio.h>
@@ -34,9 +35,6 @@
 #include <linux/time.h>
 #include <linux/kfifo.h>
 #include <asm/uaccess.h>
-
-// GPIO PIN
-#define INPUT_PIN                   25
 
 // Bit length in uS
 #define BIT_LENGTH                2000
@@ -61,7 +59,7 @@
 static DEFINE_KFIFO(bit_fifo, unsigned char, FIFO_SIZE);
 
 // For blocking read
-DECLARE_WAIT_QUEUE_HEAD(file_read);
+static DECLARE_WAIT_QUEUE_HEAD(file_read);
 
 // IRQ
 static int irq_num = 0;
@@ -70,6 +68,14 @@ static int irq_num = 0;
 static struct class* device_class = NULL;
 static struct device* device_device = NULL;
 static int device_major = 0;
+
+/***********************************************************************************************************************
+ * Module Parameters
+ **********************************************************************************************************************/
+// GPIO to use
+static unsigned int gpio = 25;
+module_param(gpio, uint, 0000);
+MODULE_PARM_DESC(gpio, "GPIO to use (default=25)");
 
 /***********************************************************************************************************************
  * Queues one bit into the bit fifo
@@ -211,17 +217,17 @@ static int __init init_port(void)
   }
 
   // Request GPIO Port
-  if(gpio_request(INPUT_PIN, DRIVER_NAME)) {
-    printk(KERN_ERR DRIVER_NAME": cant claim gpio pin %d\n", INPUT_PIN);
+  if(gpio_request(gpio, DRIVER_NAME)) {
+    printk(KERN_ERR DRIVER_NAME": cant claim gpio pin %d\n", gpio);
     retval = -ENODEV;
     goto exit;
   }
 
   // Set GPIO direction
-  gpiochip->direction_input(gpiochip, INPUT_PIN);
+  gpiochip->direction_input(gpiochip, gpio);
 
   // Recort IRQ number for later
-  irq_num = gpiochip->to_irq(gpiochip, INPUT_PIN);
+  irq_num = gpiochip->to_irq(gpiochip, gpio);
 
   retval = 0;
 
@@ -234,7 +240,7 @@ static int __init init_port(void)
  **********************************************************************************************************************/
 static void __exit uninit_port(void)
 {
-  gpio_free(INPUT_PIN);
+  gpio_free(gpio);
 }
 
 /***********************************************************************************************************************
@@ -385,7 +391,7 @@ static int __init init_main(void)
   }
 
   // Init OK, print info message
-  printk(KERN_INFO DRIVER_NAME" driver installed on GPIO %d\n", INPUT_PIN);
+  printk(KERN_INFO DRIVER_NAME" driver installed on GPIO %d\n", gpio);
   result = 0;
   goto exit;
 
