@@ -1,6 +1,6 @@
 /***********************************************************************************************************************
  *
- * WT440H Receiver kernel module for Raspberry Pi
+ * Biphase Mark Decoder Kernel Module for Raspberry Pi
  *
  * Copyright (C) 2015 Gergely Budai
  *
@@ -19,8 +19,8 @@
  *
  **********************************************************************************************************************/
 
-#define DRIVER_NAME "wt440h"
-#define DESCRIPTION "WT440H - Wireless Temperature and Humidity sensor receiver driver"
+#define DRIVER_NAME "bmd"
+#define DESCRIPTION "Biphase Mark Decoder"
 #define AUTHOR      "Gergely Budai"
 
 #include <linux/module.h>
@@ -258,7 +258,7 @@ static int device_open(struct inode* inode, struct file* filp)
 
   // Process result
   switch (result) {
-    // IRQ Already used (probably device open)
+    // IRQ Already used (probably device already opened)
     case -EBUSY: {
       printk(KERN_ERR DRIVER_NAME": IRQ %d is busy\n", irq_num);
       goto exit;

@@ -34,7 +34,7 @@
 #define BIT_TIMEOUT_MSK           2
 
 // Device file
-#define DEV_FILE                  "/dev/wt440h"
+#define DEV_FILE                  "/dev/bmd"
 
 // Suppress identical messages within this timeframe in uS
 #define SUPPRESS_TIME             1000000
