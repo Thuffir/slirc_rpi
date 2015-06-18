@@ -71,40 +71,41 @@ static struct class* device_class = NULL;
 static struct device* device_device = NULL;
 static int device_major = 0;
 
-static int __init is_right_chip(struct gpio_chip *chip, void *data)
-{
-    if (strcmp(data, chip->label) == 0) {
-      return 1;
-    }
-
-    return 0;
-}
-
+/***********************************************************************************************************************
+ * Queues one bit into the bit fifo
+ **********************************************************************************************************************/
 static inline void queue_bit(unsigned char bit, unsigned int time_stamp)
 {
   static unsigned int last_timestamp = 0;
   unsigned int retval, bit_length;
 
+  // Get bit length
   bit_length = time_stamp - last_timestamp;
   last_timestamp = time_stamp;
 
+  // Mark bit timeout if so
   if((bit_length < BIT_LENGTH_THRES_LOW) || (bit_length > BIT_LENGTH_THRES_HIGH)) {
     bit |= BIT_TIMEOUT;
   }
 
+  // Put into FIFO
   retval = kfifo_put(&bit_fifo, bit);
 
+  // Check return value
   switch(retval) {
+    // Everything OK, wake up reader
     case 1: {
       wake_up_interruptible(&file_read);
     }
     break;
 
+    // FIFO Full
     case 0: {
       printk(KERN_WARNING DRIVER_NAME": fifo full, bit missed\n");
     }
     break;
 
+    // Should not happen
     default: {
       printk(KERN_ERR DRIVER_NAME": kfifo_put() returned %u\n", retval);
     }
@@ -112,6 +113,9 @@ static inline void queue_bit(unsigned char bit, unsigned int time_stamp)
   }
 }
 
+/***********************************************************************************************************************
+ * IRQ Handler
+ **********************************************************************************************************************/
 static irqreturn_t irq_handler(int i, void *blah, struct pt_regs *regs)
 {
   // Internal State for bit recognition
@@ -126,6 +130,7 @@ static irqreturn_t irq_handler(int i, void *blah, struct pt_regs *regs)
   unsigned int bitLength, timeStamp;
   struct timeval tv;
 
+  // Get Timestamp
   do_gettimeofday(&tv);
   timeStamp = (tv.tv_sec * 1000000) + tv.tv_usec;
 
@@ -177,11 +182,27 @@ static irqreturn_t irq_handler(int i, void *blah, struct pt_regs *regs)
   return IRQ_HANDLED;
 }
 
+/***********************************************************************************************************************
+ * Check if we have the right chipset
+ **********************************************************************************************************************/
+static int __init is_right_chip(struct gpio_chip *chip, void *data)
+{
+    if (strcmp(data, chip->label) == 0) {
+      return 1;
+    }
+
+    return 0;
+}
+
+/***********************************************************************************************************************
+ * Init GPIO Port
+ **********************************************************************************************************************/
 static int __init init_port(void)
 {
   struct gpio_chip *gpiochip;
   int retval;
 
+  // Find Chipset
   gpiochip = gpiochip_find("pinctrl-bcm2835", is_right_chip);
   if(!gpiochip) {
     printk(KERN_ERR DRIVER_NAME": bcm2835 chip not found!\n");
@@ -189,13 +210,17 @@ static int __init init_port(void)
     goto exit;
   }
 
+  // Request GPIO Port
   if(gpio_request(INPUT_PIN, DRIVER_NAME)) {
     printk(KERN_ERR DRIVER_NAME": cant claim gpio pin %d\n", INPUT_PIN);
     retval = -ENODEV;
     goto exit;
   }
 
+  // Set GPIO direction
   gpiochip->direction_input(gpiochip, INPUT_PIN);
+
+  // Recort IRQ number for later
   irq_num = gpiochip->to_irq(gpiochip, INPUT_PIN);
 
   retval = 0;
@@ -204,25 +229,35 @@ static int __init init_port(void)
   return retval;
 }
 
+/***********************************************************************************************************************
+ * Deinit GPIO Port
+ **********************************************************************************************************************/
 static void __exit uninit_port(void)
 {
   gpio_free(INPUT_PIN);
 }
 
+/***********************************************************************************************************************
+ * Device file open
+ **********************************************************************************************************************/
 static int device_open(struct inode* inode, struct file* filp)
 {
   int result;
 
+  // Request GPIO IRQ
   result = request_irq(irq_num, (irq_handler_t)irq_handler,
     IRQ_TYPE_EDGE_RISING | IRQ_TYPE_EDGE_FALLING, DRIVER_NAME, (void*) 0);
 
+  // Process result
   switch (result) {
+    // IRQ Already used (probably device open)
     case -EBUSY: {
       printk(KERN_ERR DRIVER_NAME": IRQ %d is busy\n", irq_num);
       return -EBUSY;
     }
     break;
 
+    // Bad IRQ
     case -EINVAL: {
       printk(KERN_ERR DRIVER_NAME": Bad irq number or handler\n");
       return -EINVAL;
@@ -233,8 +268,12 @@ static int device_open(struct inode* inode, struct file* filp)
   return result;
 }
 
+/***********************************************************************************************************************
+ * Device file close
+ **********************************************************************************************************************/
 static int device_close(struct inode* inode, struct file* filp)
 {
+  // Disable and free the IRQ
   irq_set_irq_type(irq_num, 0);
   disable_irq(irq_num);
   free_irq(irq_num, (void *) 0);
@@ -242,30 +281,39 @@ static int device_close(struct inode* inode, struct file* filp)
   return 0;
 }
 
+/***********************************************************************************************************************
+ * Device file read
+ **********************************************************************************************************************/
 static ssize_t device_read(struct file* filp, char __user *buffer, size_t length, loff_t* offset)
 {
   int retval;
   unsigned int copied;
 
+  // Wait for event from interrupt
   wait_event_interruptible(file_read, !kfifo_is_empty(&bit_fifo));
+  // Get bit from fifo
   retval = kfifo_to_user(&bit_fifo, buffer, length, &copied);
 
   return retval ? retval : copied;
 }
 
-/* The file_operation scructure tells the kernel which device operations are handled.
- * For a list of available file operations, see http://lwn.net/images/pdf/LDD3/ch03.pdf */
+/***********************************************************************************************************************
+ * File operations structure
+ **********************************************************************************************************************/
 static struct file_operations fops = {
  .read = device_read,
  .open = device_open,
  .release = device_close
 };
 
+/***********************************************************************************************************************
+ * Initialize device file
+ **********************************************************************************************************************/
 static int __init init_device(void)
 {
   unsigned int retval;
 
-  /* First, see if we can dynamically allocate a major for our device */
+  // First, see if we can dynamically allocate a major for our device
   device_major = register_chrdev(0, DRIVER_NAME, &fops);
   if (device_major < 0) {
     printk(KERN_ERR DRIVER_NAME": failed to register device\n");
@@ -273,8 +321,7 @@ static int __init init_device(void)
     goto register_chrdev_failed;
   }
 
-  /* We can either tie our device to a bus (existing, or one that we create)
-   * or use a "virtual" device class. For this example, we choose the latter */
+  // Tie device to a virtual class
   device_class = class_create(THIS_MODULE, DRIVER_NAME);
   if (IS_ERR(device_class)) {
     printk(KERN_ERR DRIVER_NAME": failed to register device class\n");
@@ -282,7 +329,7 @@ static int __init init_device(void)
     goto class_create_failed;
   }
 
-  /* With a class, the easiest way to instantiate a device is to call device_create() */
+  // Create device file
   device_device = device_create(device_class, NULL, MKDEV(device_major, 0), NULL, DRIVER_NAME);
   if (IS_ERR(device_device)) {
     printk(KERN_ERR DRIVER_NAME": failed to create device\n");
@@ -307,6 +354,9 @@ static int __init init_device(void)
   return retval;
 }
 
+/***********************************************************************************************************************
+ * Deinitialize device file
+ **********************************************************************************************************************/
 static void __exit uninit_device(void)
 {
   device_destroy(device_class, MKDEV(device_major, 0));
@@ -315,20 +365,26 @@ static void __exit uninit_device(void)
   unregister_chrdev(device_major, DRIVER_NAME);
 }
 
+/***********************************************************************************************************************
+ * Module Entry
+ **********************************************************************************************************************/
 static int __init init_main(void)
 {
   int result;
 
+  // Init port
   result = init_port();
   if(result) {
     goto init_port_failed;
   }
 
+  // Init device file
   result = init_device();
   if(result) {
     goto init_device_failed;
   }
 
+  // Init OK, print info message
   printk(KERN_INFO DRIVER_NAME" driver installed on GPIO %d\n", INPUT_PIN);
   result = 0;
   goto exit;
@@ -340,17 +396,24 @@ static int __init init_main(void)
   return result;
 }
 
+/***********************************************************************************************************************
+ * Module Exit
+ **********************************************************************************************************************/
 static void __exit exit_main(void)
 {
+  // Deinit device file
   uninit_device();
+  // Deinit GPIO Port
   uninit_port();
 
   printk(KERN_INFO DRIVER_NAME" driver uninstalled\n");
 }
 
+// Init and Exit functions
 module_init(init_main);
 module_exit(exit_main);
 
+// Module informations
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR(AUTHOR);
 MODULE_DESCRIPTION(DESCRIPTION);
