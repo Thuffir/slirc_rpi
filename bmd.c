@@ -49,6 +49,8 @@ static unsigned int bit_length_thres_low, bit_length_thres_high, halfbit_length_
 // Bits FIFO
 #define FIFO_SIZE                  32
 static DEFINE_KFIFO(bit_fifo, unsigned char, FIFO_SIZE);
+// Fifo usage statistics
+static unsigned int max_bit_fifo_used = 0;
 
 // For blocking read
 static DECLARE_WAIT_QUEUE_HEAD(file_read);
@@ -66,17 +68,17 @@ static int device_major = 0;
  **********************************************************************************************************************/
 // GPIO to use
 static unsigned int gpio = 25;
-module_param(gpio, uint, S_IRUSR);
+module_param(gpio, uint, S_IRUSR | S_IRGRP | S_IROTH);
 MODULE_PARM_DESC(gpio, "GPIO to use (default=25)");
 
 // Bit length in us
 static unsigned int bit_length = 2000;
-module_param(bit_length, uint, S_IRUSR);
+module_param(bit_length, uint, S_IRUSR | S_IRGRP | S_IROTH);
 MODULE_PARM_DESC(bit_length, "Bit length in us (default=2000)");
 
 // +- Bit length tolerance in uS
 static unsigned int bit_length_tolerance = 200;
-module_param(bit_length_tolerance, uint, S_IRUSR);
+module_param(bit_length_tolerance, uint, S_IRUSR | S_IRGRP | S_IROTH);
 MODULE_PARM_DESC(bit_length_tolerance, "Bit length tolerance in us (default=200)");
 
 /***********************************************************************************************************************
@@ -85,7 +87,7 @@ MODULE_PARM_DESC(bit_length_tolerance, "Bit length tolerance in us (default=200)
 static inline void queue_bit(unsigned char bit, unsigned int time_stamp)
 {
   static unsigned int last_timestamp = 0;
-  unsigned int retval, bit_length;
+  unsigned int retval, bit_length, fifo_used;
 
   // Get bit length
   bit_length = time_stamp - last_timestamp;
@@ -98,6 +100,12 @@ static inline void queue_bit(unsigned char bit, unsigned int time_stamp)
 
   // Put into FIFO
   retval = kfifo_put(&bit_fifo, bit);
+
+  // Provide statistics over fifo usage
+  fifo_used = kfifo_len(&bit_fifo);
+  if(fifo_used > max_bit_fifo_used) {
+    max_bit_fifo_used = fifo_used;
+  }
 
   // Check return value
   switch(retval) {
@@ -322,6 +330,15 @@ static struct file_operations fops = {
 };
 
 /***********************************************************************************************************************
+ * Sysfs file with Fifo Statistics
+ **********************************************************************************************************************/
+static ssize_t show_fifo_stats(struct device *dev, struct device_attribute *attr, char *buf)
+{
+  return scnprintf(buf, PAGE_SIZE, "Max: %u\nCur: %u\n", max_bit_fifo_used, kfifo_len(&bit_fifo));
+}
+static DEVICE_ATTR(fifo, S_IRUSR | S_IRGRP | S_IROTH, show_fifo_stats, NULL);
+
+/***********************************************************************************************************************
  * Initialize device file
  **********************************************************************************************************************/
 static int __init init_device(void)
@@ -352,6 +369,11 @@ static int __init init_device(void)
     goto device_create_failed;
   }
 
+  // Sysfs file for fifo stats
+  if(device_create_file(device_device, &dev_attr_fifo) < 0) {
+    printk(KERN_WARNING DRIVER_NAME": could not create sysfs fifo stats file\n");
+  }
+
   // Everything OK
   retval = 0;
   goto exit;
@@ -374,6 +396,7 @@ static int __init init_device(void)
  **********************************************************************************************************************/
 static void __exit uninit_device(void)
 {
+  device_remove_file(device_device, &dev_attr_fifo);
   device_destroy(device_class, MKDEV(device_major, 0));
   class_unregister(device_class);
   class_destroy(device_class);
