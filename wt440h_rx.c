@@ -36,23 +36,15 @@
 #include <linux/kfifo.h>
 #include <asm/uaccess.h>
 
-// Bit length in uS
-#define BIT_LENGTH                2000
-// +- Bit length tolerance in uS
-#define BIT_LENGTH_TOLERANCE       200
-
-// Calculated Thresholds for zeros and ones
-#define BIT_LENGTH_THRES_LOW      (BIT_LENGTH - BIT_LENGTH_TOLERANCE)
-#define BIT_LENGTH_THRES_HIGH     (BIT_LENGTH + BIT_LENGTH_TOLERANCE)
-#define HALFBIT_LENGTH_THRES_LOW  ((BIT_LENGTH / 2) - BIT_LENGTH_TOLERANCE)
-#define HALFBIT_LENGTH_THRES_HIGH ((BIT_LENGTH / 2) + BIT_LENGTH_TOLERANCE)
-
 // Bit definitions
 #define BIT_ZERO                  0
 #define BIT_ONE                   1
 #define BIT_TIMEOUT               2
 #define BIT_MSK                   1
 #define BIT_TIMEOUT_MSK           2
+
+// Calculated Thresholds for bit lengths
+static unsigned int bit_length_thres_low, bit_length_thres_high, halfbit_length_thres_low, halfbit_length_thres_high;
 
 // Bits FIFO
 #define FIFO_SIZE                  32
@@ -74,8 +66,18 @@ static int device_major = 0;
  **********************************************************************************************************************/
 // GPIO to use
 static unsigned int gpio = 25;
-module_param(gpio, uint, 0000);
+module_param(gpio, uint, S_IRUSR);
 MODULE_PARM_DESC(gpio, "GPIO to use (default=25)");
+
+// Bit length in us
+static unsigned int bit_length = 2000;
+module_param(bit_length, uint, S_IRUSR);
+MODULE_PARM_DESC(bit_length, "Bit length in us (default=2000)");
+
+// +- Bit length tolerance in uS
+static unsigned int bit_length_tolerance = 200;
+module_param(bit_length_tolerance, uint, S_IRUSR);
+MODULE_PARM_DESC(bit_length_tolerance, "Bit length tolerance in us (default=200)");
 
 /***********************************************************************************************************************
  * Queues one bit into the bit fifo
@@ -90,7 +92,7 @@ static inline void queue_bit(unsigned char bit, unsigned int time_stamp)
   last_timestamp = time_stamp;
 
   // Mark bit timeout if so
-  if((bit_length < BIT_LENGTH_THRES_LOW) || (bit_length > BIT_LENGTH_THRES_HIGH)) {
+  if((bit_length < bit_length_thres_low) || (bit_length > bit_length_thres_high)) {
     bit |= BIT_TIMEOUT;
   }
 
@@ -155,11 +157,11 @@ static irqreturn_t irq_handler(int i, void *blah, struct pt_regs *regs)
     // Start edge of a bit has been received
     case BitStartReceived: {
       // Check bit length
-      if((bitLength >= BIT_LENGTH_THRES_LOW) && (bitLength <= BIT_LENGTH_THRES_HIGH)) {
+      if((bitLength >= bit_length_thres_low) && (bitLength <= bit_length_thres_high)) {
         // Full bit length, Zero received
         queue_bit(BIT_ZERO, timeStamp);
       }
-      else if((bitLength >= HALFBIT_LENGTH_THRES_LOW) && (bitLength <= HALFBIT_LENGTH_THRES_HIGH)) {
+      else if((bitLength >= halfbit_length_thres_low) && (bitLength <= halfbit_length_thres_high)) {
         // Half bit length, first half of a One received
         state = HalfBitReceived;
       }
@@ -169,7 +171,7 @@ static irqreturn_t irq_handler(int i, void *blah, struct pt_regs *regs)
     // First half of a One received
     case HalfBitReceived: {
       // Check bit length
-      if((bitLength >= HALFBIT_LENGTH_THRES_LOW) && (bitLength <= HALFBIT_LENGTH_THRES_HIGH)) {
+      if((bitLength >= halfbit_length_thres_low) && (bitLength <= halfbit_length_thres_high)) {
         // Second half of a One received
         queue_bit(BIT_ONE, timeStamp);
       }
@@ -259,18 +261,22 @@ static int device_open(struct inode* inode, struct file* filp)
     // IRQ Already used (probably device open)
     case -EBUSY: {
       printk(KERN_ERR DRIVER_NAME": IRQ %d is busy\n", irq_num);
-      return -EBUSY;
+      goto exit;
     }
     break;
 
     // Bad IRQ
     case -EINVAL: {
       printk(KERN_ERR DRIVER_NAME": Bad irq number or handler\n");
-      return -EINVAL;
+      goto exit;
     }
     break;
   }
 
+  // Increment usage counter;
+  try_module_get(THIS_MODULE);
+
+  exit:
   return result;
 }
 
@@ -283,6 +289,9 @@ static int device_close(struct inode* inode, struct file* filp)
   irq_set_irq_type(irq_num, 0);
   disable_irq(irq_num);
   free_irq(irq_num, (void *) 0);
+
+  // Decrement usage counter;
+  module_put(THIS_MODULE);
 
   return 0;
 }
@@ -378,6 +387,12 @@ static int __init init_main(void)
 {
   int result;
 
+  // Calculate bit length thresholds
+  bit_length_thres_low      = bit_length - bit_length_tolerance;
+  bit_length_thres_high     = bit_length + bit_length_tolerance;
+  halfbit_length_thres_low  = (bit_length / 2) - bit_length_tolerance;
+  halfbit_length_thres_high = (bit_length / 2) + bit_length_tolerance;
+
   // Init port
   result = init_port();
   if(result) {
@@ -391,7 +406,7 @@ static int __init init_main(void)
   }
 
   // Init OK, print info message
-  printk(KERN_INFO DRIVER_NAME" driver installed on GPIO %d\n", gpio);
+  printk(KERN_INFO DRIVER_NAME": driver installed on GPIO %u\n", gpio);
   result = 0;
   goto exit;
 
@@ -412,7 +427,7 @@ static void __exit exit_main(void)
   // Deinit GPIO Port
   uninit_port();
 
-  printk(KERN_INFO DRIVER_NAME" driver uninstalled\n");
+  printk(KERN_INFO DRIVER_NAME": driver uninstalled\n");
 }
 
 // Init and Exit functions
