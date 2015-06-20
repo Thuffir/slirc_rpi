@@ -334,7 +334,7 @@ static struct file_operations fops = {
  **********************************************************************************************************************/
 static ssize_t show_fifo_stats(struct device *dev, struct device_attribute *attr, char *buf)
 {
-  return scnprintf(buf, PAGE_SIZE, "Max: %u\nCur: %u\n", max_bit_fifo_used, kfifo_len(&bit_fifo));
+  return scnprintf(buf, PAGE_SIZE, "Size: %2u\nMax:  %2u\nCurr: %2u\n", FIFO_SIZE, max_bit_fifo_used, kfifo_len(&bit_fifo));
 }
 static DEVICE_ATTR(fifo, S_IRUSR | S_IRGRP | S_IROTH, show_fifo_stats, NULL);
 
