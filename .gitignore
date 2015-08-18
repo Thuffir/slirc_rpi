@@ -1,0 +1,9 @@
+.project
+.cproject
+*.o
+*.ko
+*.cmd
+*.mod
+modules.order
+Module.symvers
+*.mod.c
