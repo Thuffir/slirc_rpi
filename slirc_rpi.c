@@ -1,6 +1,6 @@
 /***********************************************************************************************************************
  *
- * Biphase Mark Decoder Kernel Module for Raspberry Pi
+ * Simple LIRC Kernel Module for Raspberry Pi
  *
  * Copyright (C) 2015 Gergely Budai
  *
@@ -19,8 +19,8 @@
  *
  **********************************************************************************************************************/
 
-#define DRIVER_NAME "bmd"
-#define DESCRIPTION "Biphase Mark Decoder"
+#define DRIVER_NAME "slirc_rpi"
+#define DESCRIPTION "Simple LIRC Kernel Module"
 #define AUTHOR      "Gergely Budai"
 
 #include <linux/module.h>
@@ -36,19 +36,9 @@
 #include <linux/kfifo.h>
 #include <asm/uaccess.h>
 
-// Bit definitions
-#define BIT_ZERO                  0
-#define BIT_ONE                   1
-#define BIT_TIMEOUT               2
-#define BIT_MSK                   1
-#define BIT_TIMEOUT_MSK           2
-
-// Calculated Thresholds for bit lengths
-static unsigned int bit_length_thres_low, bit_length_thres_high, halfbit_length_thres_low, halfbit_length_thres_high;
-
 // Bits FIFO
 #define FIFO_SIZE                  32
-static DEFINE_KFIFO(bit_fifo, unsigned char, FIFO_SIZE);
+static DEFINE_KFIFO(bit_fifo, unsigned int, FIFO_SIZE);
 // Fifo usage statistics
 static unsigned int max_bit_fifo_used = 0;
 
@@ -71,35 +61,27 @@ static unsigned int gpio = 25;
 module_param(gpio, uint, S_IRUSR | S_IRGRP | S_IROTH);
 MODULE_PARM_DESC(gpio, "GPIO to use (default=25)");
 
-// Bit length in us
-static unsigned int bit_length = 2000;
-module_param(bit_length, uint, S_IRUSR | S_IRGRP | S_IROTH);
-MODULE_PARM_DESC(bit_length, "Bit length in us (default=2000)");
-
-// +- Bit length tolerance in uS
-static unsigned int bit_length_tolerance = 200;
-module_param(bit_length_tolerance, uint, S_IRUSR | S_IRGRP | S_IROTH);
-MODULE_PARM_DESC(bit_length_tolerance, "Bit length tolerance in us (default=200)");
-
 /***********************************************************************************************************************
- * Queues one bit into the bit fifo
+ * IRQ Handler
  **********************************************************************************************************************/
-static inline void queue_bit(unsigned char bit, unsigned int time_stamp)
+static irqreturn_t irq_handler(int i, void *blah, struct pt_regs *regs)
 {
-  static unsigned int last_timestamp = 0;
-  unsigned int retval, bit_length, fifo_used;
+  // Last timestamp for bit length calculation
+  static unsigned int lastTimeStamp = 0;
+  // Local variables
+  unsigned int pulseLength, timeStamp, retval, fifo_used;
+  struct timeval tv;
 
-  // Get bit length
-  bit_length = time_stamp - last_timestamp;
-  last_timestamp = time_stamp;
+  // Get Timestamp
+  do_gettimeofday(&tv);
+  timeStamp = (tv.tv_sec * 1000000) + tv.tv_usec;
 
-  // Mark bit timeout if so
-  if((bit_length < bit_length_thres_low) || (bit_length > bit_length_thres_high)) {
-    bit |= BIT_TIMEOUT;
-  }
+  // Calculate bit length
+  pulseLength = timeStamp - lastTimeStamp;
+  lastTimeStamp = timeStamp;
 
-  // Put into FIFO
-  retval = kfifo_put(&bit_fifo, bit);
+  // Put pulse into FIFO
+  retval = kfifo_put(&bit_fifo, pulseLength);
 
   // Provide statistics over fifo usage
   fifo_used = kfifo_len(&bit_fifo);
@@ -117,80 +99,13 @@ static inline void queue_bit(unsigned char bit, unsigned int time_stamp)
 
     // FIFO Full
     case 0: {
-      printk(KERN_WARNING DRIVER_NAME": fifo full, bit missed\n");
+      printk(KERN_WARNING DRIVER_NAME": fifo full, pulse missed\n");
     }
     break;
 
     // Should not happen
     default: {
       printk(KERN_ERR DRIVER_NAME": kfifo_put() returned %u\n", retval);
-    }
-    break;
-  }
-}
-
-/***********************************************************************************************************************
- * IRQ Handler
- **********************************************************************************************************************/
-static irqreturn_t irq_handler(int i, void *blah, struct pt_regs *regs)
-{
-  // Internal State for bit recognition
-  static enum {
-    Init,
-    BitStartReceived,
-    HalfBitReceived
-  } state = Init;
-  // Last timestamp for bit length calculation
-  static unsigned int lastTimeStamp = 0;
-  // Bit Length
-  unsigned int bitLength, timeStamp;
-  struct timeval tv;
-
-  // Get Timestamp
-  do_gettimeofday(&tv);
-  timeStamp = (tv.tv_sec * 1000000) + tv.tv_usec;
-
-  // Calculate bit length
-  bitLength = timeStamp - lastTimeStamp;
-  lastTimeStamp = timeStamp;
-
-  // Bit recognition state machine
-  switch(state) {
-    // Init State, no start Timestamp yet
-    case Init: {
-      state = BitStartReceived;
-    }
-    break;
-
-    // Start edge of a bit has been received
-    case BitStartReceived: {
-      // Check bit length
-      if((bitLength >= bit_length_thres_low) && (bitLength <= bit_length_thres_high)) {
-        // Full bit length, Zero received
-        queue_bit(BIT_ZERO, timeStamp);
-      }
-      else if((bitLength >= halfbit_length_thres_low) && (bitLength <= halfbit_length_thres_high)) {
-        // Half bit length, first half of a One received
-        state = HalfBitReceived;
-      }
-    }
-    break;
-
-    // First half of a One received
-    case HalfBitReceived: {
-      // Check bit length
-      if((bitLength >= halfbit_length_thres_low) && (bitLength <= halfbit_length_thres_high)) {
-        // Second half of a One received
-        queue_bit(BIT_ONE, timeStamp);
-      }
-      state = BitStartReceived;
-    }
-    break;
-
-    // Invalid state (should not happen)
-    default: {
-      printk(KERN_ERR DRIVER_NAME": irq handler has invalid state: %u\n", state);
-      state = BitStartReceived;
     }
     break;
   }
@@ -334,7 +249,8 @@ static struct file_operations fops = {
  **********************************************************************************************************************/
 static ssize_t show_fifo_stats(struct device *dev, struct device_attribute *attr, char *buf)
 {
-  return scnprintf(buf, PAGE_SIZE, "Size: %2u\nMax:  %2u\nCurr: %2u\n", FIFO_SIZE, max_bit_fifo_used, kfifo_len(&bit_fifo));
+  return scnprintf(buf, PAGE_SIZE, "Size: %2u\nMax:  %2u\nCurr: %2u\n",
+    FIFO_SIZE, max_bit_fifo_used, kfifo_len(&bit_fifo));
 }
 static DEVICE_ATTR(fifo, S_IRUSR | S_IRGRP | S_IROTH, show_fifo_stats, NULL);
 
@@ -409,12 +325,6 @@ static void __exit uninit_device(void)
 static int __init init_main(void)
 {
   int result;
-
-  // Calculate bit length thresholds
-  bit_length_thres_low      = bit_length - bit_length_tolerance;
-  bit_length_thres_high     = bit_length + bit_length_tolerance;
-  halfbit_length_thres_low  = (bit_length / 2) - bit_length_tolerance;
-  halfbit_length_thres_high = (bit_length / 2) + bit_length_tolerance;
 
   // Init port
   result = init_port();
